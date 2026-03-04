@@ -18,7 +18,7 @@ def split_people(s):
     if s is None:
         return []
     s = str(s).strip()
-    if not s:
+    if not s or s.lower() == "nan":
         return []
     parts = [p.strip() for p in s.split("/") if p.strip()]
     seen = set()
@@ -61,6 +61,15 @@ def parse_date(x):
         return dt.date()
     except Exception:
         return None
+
+
+def to_period_label(d, granularity: str) -> str:
+    if granularity == "weekly":
+        iso_year, iso_week, _ = d.isocalendar()
+        return f"{iso_year}-W{iso_week:02d}"
+    if granularity == "monthly":
+        return f"{d.year:04d}-{d.month:02d}"
+    return d.isoformat()
 
 def col_letter_to_index(letter: str) -> int:
     letter = letter.strip().upper()
@@ -205,16 +214,30 @@ def aggregate(cfg: AppConfig) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame,
             lot_share = lot_cnt / n
             pages_share = pages / n
 
+            single_worker = (n == 1)
+            fallback_owner = _norm_name(workers[0]) if single_worker else ""
+
             for w in workers:
                 wn = _norm_name(w)
+
+                l1_share = (l1 / l1_den) if (l1_den and wn in l1_owner_norm) else 0.0
+                l2_share = (l2 / l2_den) if (l2_den and wn in l2_owner_norm) else 0.0
+
+                # 단독작업인데 담당자 컬럼이 비어 있으면 작업자가 결함 실적을 모두 가져가도록 보정
+                if single_worker and wn == fallback_owner:
+                    if l1_den == 0:
+                        l1_share = l1
+                    if l2_den == 0:
+                        l2_share = l2
+
                 records.append({
                     "일자": d,
                     "작업일보": s.name,
                     "작업자": w,
                     "LOT": lot_share,
                     "매수": pages_share,
-                    "Defect_L1": (l1 / l1_den) if (l1_den and wn in l1_owner_norm) else 0.0,
-                    "Defect_L2": (l2 / l2_den) if (l2_den and wn in l2_owner_norm) else 0.0,
+                    "Defect_L1": l1_share,
+                    "Defect_L2": l2_share,
                     "제외여부": wn in cfg.exclude,  # 분해는 하되 집계에서 제외
                 })
 
@@ -224,9 +247,11 @@ def aggregate(cfg: AppConfig) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame,
 
     inc = expanded[expanded["제외여부"] == False].copy()
 
-    daily = (inc.groupby(["일자","작업자"], as_index=False)[["LOT","매수","Defect_L1","Defect_L2"]].sum())
-    detail = (inc.groupby(["작업자","작업일보"], as_index=False)[["LOT","매수","Defect_L1","Defect_L2"]].sum())
-    summary = (inc.groupby(["작업자"], as_index=False)[["LOT","매수","Defect_L1","Defect_L2"]].sum())
+    inc["기간"] = inc["일자"].apply(lambda d: to_period_label(d, cfg.granularity))
+
+    daily = (inc.groupby(["기간", "작업자"], as_index=False)[["LOT","매수","Defect_L1","Defect_L2"]].sum())
+    summary = (inc.groupby(["작업자", "작업일보"], as_index=False)[["LOT","매수","Defect_L1","Defect_L2"]].sum())
+    detail = (inc.groupby(["기간", "작업자", "작업일보"], as_index=False)[["LOT","매수","Defect_L1","Defect_L2"]].sum())
 
     dec = cfg.round_decimals
     for df in (daily, detail, summary):
