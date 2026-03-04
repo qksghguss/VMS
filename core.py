@@ -62,6 +62,15 @@ def parse_date(x):
     except Exception:
         return None
 
+
+def to_period_label(d, granularity: str) -> str:
+    if granularity == "weekly":
+        iso_year, iso_week, _ = d.isocalendar()
+        return f"{iso_year}-W{iso_week:02d}"
+    if granularity == "monthly":
+        return f"{d.year:04d}-{d.month:02d}"
+    return d.isoformat()
+
 def col_letter_to_index(letter: str) -> int:
     letter = letter.strip().upper()
     n = 0
@@ -224,7 +233,9 @@ def aggregate(cfg: AppConfig) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame,
 
     inc = expanded[expanded["제외여부"] == False].copy()
 
-    daily = (inc.groupby(["일자","작업자"], as_index=False)[["LOT","매수","Defect_L1","Defect_L2"]].sum())
+    inc["기간"] = inc["일자"].apply(lambda d: to_period_label(d, cfg.granularity))
+
+    daily = (inc.groupby(["기간", "작업자"], as_index=False)[["LOT","매수","Defect_L1","Defect_L2"]].sum())
     detail = (inc.groupby(["작업자","작업일보"], as_index=False)[["LOT","매수","Defect_L1","Defect_L2"]].sum())
     summary = (inc.groupby(["작업자"], as_index=False)[["LOT","매수","Defect_L1","Defect_L2"]].sum())
 

@@ -64,8 +64,25 @@ class MainWindow(QMainWindow):
 
         self._build_settings_tab()
         self._build_dashboard_tab()
+        self._apply_style()
 
         self.load_config()
+
+    def _apply_style(self):
+        self.setStyleSheet("""
+            QWidget { font-size: 13px; }
+            QTabBar::tab { min-width: 180px; min-height: 34px; padding: 6px 12px; }
+            QPushButton { min-height: 30px; padding: 2px 10px; }
+            QLineEdit, QComboBox, QDateEdit, QSpinBox { min-height: 28px; }
+            QTableWidget { gridline-color: #d9d9d9; }
+            QLabel#statCard {
+                background: #f5f7fb;
+                border: 1px solid #dce3ef;
+                border-radius: 8px;
+                padding: 12px;
+                font-weight: 600;
+            }
+        """)
 
     # ---------- UI: Settings ----------
     def _build_settings_tab(self):
@@ -99,7 +116,9 @@ class MainWindow(QMainWindow):
         src_header.addWidget(QLabel("원본 작업일보 (Sources)"))
         self.btn_add_source = QPushButton("+ 추가")
         self.btn_del_source = QPushButton("- 삭제")
+        self.btn_pick_source = QPushButton("파일 선택")
         src_header.addStretch(1)
+        src_header.addWidget(self.btn_pick_source)
         src_header.addWidget(self.btn_add_source)
         src_header.addWidget(self.btn_del_source)
         src_layout.addLayout(src_header)
@@ -223,6 +242,7 @@ class MainWindow(QMainWindow):
 
         self.btn_add_source.clicked.connect(self.add_source_row)
         self.btn_del_source.clicked.connect(self.del_source_row)
+        self.btn_pick_source.clicked.connect(self.pick_source_file)
 
         self.btn_ex_add.clicked.connect(self.add_exclude)
         self.btn_ex_del.clicked.connect(self.del_exclude)
@@ -237,6 +257,15 @@ class MainWindow(QMainWindow):
         self.lbl_status = QLabel("대기 중")
         self.lbl_status.setStyleSheet("font-weight:600;")
         top.addWidget(self.lbl_status)
+        self.stat_total = QLabel("총 작업자: -")
+        self.stat_total.setObjectName("statCard")
+        self.stat_top = QLabel("TOP 작업자: -")
+        self.stat_top.setObjectName("statCard")
+        self.stat_pages = QLabel("총 매수: -")
+        self.stat_pages.setObjectName("statCard")
+        top.addWidget(self.stat_total)
+        top.addWidget(self.stat_top)
+        top.addWidget(self.stat_pages)
         top.addStretch(1)
         layout.addLayout(top)
 
@@ -250,6 +279,7 @@ class MainWindow(QMainWindow):
         self.tbl_sum.setHorizontalHeaderLabels(["순위","작업자","LOT","매수","Defect_L1","Defect_L2"])
         self.tbl_sum.horizontalHeader().setStretchLastSection(True)
         self.tbl_sum.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tbl_sum.setAlternatingRowColors(True)
         lyt.addWidget(self.tbl_sum, 1)
 
         # right: charts
@@ -323,6 +353,8 @@ class MainWindow(QMainWindow):
             path = self.tbl_sources.item(r, 2).text().strip() if self.tbl_sources.item(r, 2) else ""
             sheet = self.tbl_sources.item(r, 3).text().strip() if self.tbl_sources.item(r, 3) else "Sheet1"
             header_row = int(self.tbl_sources.item(r, 4).text().strip() or "1") if self.tbl_sources.item(r, 4) else 1
+            if header_row <= 0:
+                raise ValueError(f"헤더행은 1 이상이어야 합니다. (행: {r+1})")
             sources.append(SourceSpec(use=use, name=name, path=path, sheet=sheet, header_row=header_row))
 
         mapping = {}
@@ -413,6 +445,16 @@ class MainWindow(QMainWindow):
         self.tbl_sources.setItem(r, 3, QTableWidgetItem("Sheet1"))
         self.tbl_sources.setItem(r, 4, QTableWidgetItem("1"))
 
+    def pick_source_file(self):
+        rows = sorted({i.row() for i in self.tbl_sources.selectedIndexes()})
+        if not rows:
+            QMessageBox.information(self, "선택 필요", "파일 경로를 채울 소스 행을 먼저 선택하세요.")
+            return
+        row = rows[0]
+        path, _ = QFileDialog.getOpenFileName(self, "작업일보 파일 선택", "", "Excel (*.xlsx *.xlsm *.xls)")
+        if path:
+            self.tbl_sources.setItem(row, 2, QTableWidgetItem(path))
+
     def del_source_row(self):
         rows = sorted({i.row() for i in self.tbl_sources.selectedIndexes()}, reverse=True)
         for r in rows:
@@ -420,7 +462,16 @@ class MainWindow(QMainWindow):
 
     # ---------- Run / Export ----------
     def run_aggregate(self):
-        cfg = self._gather_from_ui()
+        try:
+            cfg = self._gather_from_ui()
+        except Exception as e:
+            QMessageBox.warning(self, "설정 오류", str(e))
+            return
+
+        if not any(s.use for s in cfg.sources):
+            QMessageBox.warning(self, "설정 오류", "사용할 소스를 1개 이상 체크하세요.")
+            return
+
         self.log.append("집계 시작...")
         self.lbl_status.setText("집계 중...")
         self.btn_export.setEnabled(False)
@@ -467,6 +518,15 @@ class MainWindow(QMainWindow):
                 self.tbl_sum.setItem(r, c, QTableWidgetItem(str(val)))
         self.tbl_sum.resizeColumnsToContents()
 
+        self.stat_total.setText(f"총 작업자: {len(self.summary)}")
+        if len(self.summary):
+            top_row = self.summary.iloc[0]
+            self.stat_top.setText(f"TOP 작업자: {top_row['작업자']}")
+            self.stat_pages.setText(f"총 매수: {self.summary['매수'].sum():,.2f}")
+        else:
+            self.stat_top.setText("TOP 작업자: -")
+            self.stat_pages.setText("총 매수: -")
+
         # charts
         self.canvas_top.ax.clear()
         top10 = self.summary.head(10)
@@ -479,10 +539,10 @@ class MainWindow(QMainWindow):
         self.canvas_top.draw()
 
         self.canvas_daily.ax.clear()
-        daily_total = self.daily.groupby("일자", as_index=False)[["매수"]].sum().sort_values("일자")
+        daily_total = self.daily.groupby("기간", as_index=False)[["매수"]].sum().sort_values("기간")
         if len(daily_total):
-            self.canvas_daily.ax.plot(daily_total["일자"], daily_total["매수"])
-            self.canvas_daily.ax.set_title("일자별 총 매수(제외자 제외)")
+            self.canvas_daily.ax.plot(daily_total["기간"], daily_total["매수"], marker="o")
+            self.canvas_daily.ax.set_title(f"기간별 총 매수(단위: {self.cmb_gran.currentText()})")
             self.canvas_daily.ax.tick_params(axis='x', rotation=45)
         self.canvas_daily.draw()
 
